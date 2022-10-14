@@ -6,6 +6,7 @@ import tqdm
 import numpy as np
 from collections import Counter
 from spacy.lang.en import English
+import torch
 
 
 def process_book_dir(d, max_per_book=None):
@@ -19,7 +20,7 @@ def process_book_dir(d, max_per_book=None):
             if fn.split(".")[-1] == "txt":
                 n_files += 1
                 book_title = fn.split(".")[0]
-                with open(os.path.join(d, fn), "r") as f:
+                with open(os.path.join(d, fn), "r", encoding='utf-8') as f:
                     new_lines = [s for s in f.readlines()]
                     if max_per_book is not None and max_per_book < len(new_lines):
                         new_lines = new_lines[:max_per_book]
@@ -124,7 +125,8 @@ def save_word2vec_format(fname, model, i2v):
 
 
 def encode_data(data, v2i, seq_len):
-    num_insts = sum([len(ep) for ep in data])
+    # made edits to fix the size of num_insts
+    num_insts = len(data)
     x = np.zeros((num_insts, seq_len), dtype=np.int32)
     lens = np.zeros((num_insts, 1), dtype=np.int32)
 
@@ -159,3 +161,35 @@ def encode_data(data, v2i, seq_len):
     print("INFO: encoded %d sentences without regard to order" % idx)
 
     return x, lens
+
+
+# transform data in the format
+# [[1, 5, 52, 37],
+#  [9, 345, 642, 10],
+#  ...
+# ]
+# to the format
+# [[0, 1, 0, 0, 0, 1, ... (at index=52) 1, ..., (at index=37) 1, ... (until |vocab|)],
+#  [0, 0, 0, 0, 0, 0, 0, 0, 1, ....],
+#  ...
+# ]
+def token_to_multihot(tokens, vocab_size):
+    res = np.zeros((len(tokens), vocab_size))
+
+    # loop through rows
+    for idx in range(len(tokens)):
+        # loop through columns
+
+        # handle if list (contexts)
+        if isinstance(tokens[idx], list):
+            for token in tokens[idx]:
+                res[idx, token] = 1
+
+        # handle if a single word (input)
+        else:
+            res[idx, tokens[idx]] = 1
+
+    # cast numpy array to tensor before returning
+    return torch.from_numpy(res)
+
+
