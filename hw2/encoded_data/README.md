@@ -1,0 +1,1 @@
+This is a copy of ../encoded_context.txt and ../encoded_words.txt, but specifically for vocab=3000. If you choose to rerun train.py with a different vocabulary, you have to include the --save_encodings flag to re-encode all the data. Since this process takes a long time, I've saved the vocab=3000 version in this folder for easy access later in case I change my mind. 

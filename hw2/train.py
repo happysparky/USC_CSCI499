@@ -102,51 +102,53 @@ def setup_dataloader(args):
     else:
 
         index_to_vocab = {}
-        encoded_words = []
-        encoded_context = []
+        # encoded_words = []
+        # encoded_context = []
 
         # i = 0
-        with open("encoded_words.txt", "r") as f_words:
-            for word in f_words:
-                word = word.strip()  
-                encoded_words.append(word)
-                # i += 1
-                # if i == 1000:
-                #     break
-
+        # with open("encoded_words.txt", "r") as f_words:
+        #     for word in f_words:
+        #         word = word.strip()  
+        #         encoded_words.append(word)
+        #         i += 1
+        #         if i == 2000000:
+        #             break
         # i = 0
-        with open("encoded_context.txt", "r") as f_context:
-            for context in f_context:
-                context = context.strip()
-                context = context.split(" ")
-                # transform string back to int
-                context = list(map(int, context))
-                context = np.array(context)
-                encoded_context.append(context)
-                # i += 1
-                # if i == 1000:
-                #     break
+        # with open("encoded_context.txt", "r") as f_context:
+        #     for context in f_context:
+        #         context = context.strip()
+        #         context = context.split(" ")
+        #         # transform string back to int
+        #         context = list(map(int, context))
+        #         context = np.array(context)
+        #         encoded_context.append(context)
+        #         i += 1
+        #         if i == 2000000:
+        #             break
 
-        with open("index_to_vocab.txt", "r") as f_i2v:
+        with open("index_to_vocab.txt", "r", encoding='latin-1') as f_i2v:
+  
             for pair in f_i2v:
                 pair = pair.strip()
                 pair = pair.split(":")
                 index_to_vocab[int(pair[0])] = pair[1] 
 
         # transform string back to int
-        encoded_words = list(map(int, encoded_words))
-        encoded_words = np.array(encoded_words)
-        encoded_contex = np.array(encoded_context)  
+        # encoded_words = list(map(int, encoded_words))
+        # encoded_words = np.array(encoded_words)
+        # encoded_contex = np.array(encoded_context)  
 
     # ok to split down here because we don't care if the val set knows information from training in this case since our accuracy is based on analogies
-    x_train, x_test, y_train, y_test = train_test_split(encoded_words, encoded_context, test_size=args.val_size, shuffle=True)
+    # x_train, x_test, y_train, y_test = train_test_split(encoded_words, encoded_context, test_size=args.val_size, shuffle=True)
 
     # convert everything to tensors
-    train_dataset = TensorDataset(torch.from_numpy(np.array(x_train)), torch.from_numpy(np.array(y_train)))
-    val_dataset = TensorDataset(torch.from_numpy(np.array(x_test)), torch.from_numpy(np.array(y_test)))
+    # train_dataset = TensorDataset(torch.from_numpy(np.array(x_train)), torch.from_numpy(np.array(y_train)))
+    # val_dataset = TensorDataset(torch.from_numpy(np.array(x_test)), torch.from_numpy(np.array(y_test)))
 
-    train_loader = DataLoader(train_dataset, shuffle=True, batch_size=args.batch_size)
-    val_loader = DataLoader(val_dataset, shuffle=True, batch_size=args.batch_size)
+    # train_loader = DataLoader(train_dataset, shuffle=True, batch_size=args.batch_size)
+    # val_loader = DataLoader(val_dataset, shuffle=True, batch_size=args.batch_size)
+    train_loader = None
+    val_loader = None
     return train_loader, val_loader, index_to_vocab
 
 
@@ -163,7 +165,7 @@ def setup_model(args, device):
         device,
         args.vocab_size,
         args.emb_dim
-    )
+    ).to(device)
     return m
 
 
@@ -183,21 +185,24 @@ def setup_optimizer(args, model):
     optimizer = torch.optim.SGD(model.parameters(), lr=args.learning_rate)
     return context_criterion, optimizer
 
-# our own accuracy calculation using Intersection over Union (IoU)
+# defining custom accuracy calculation using Intersection over Union (IoU)
 def IoU_accuracy(pred, actual):
     # pred and accuracy are matrices with dimensions (batch_size, |vocab|)
     # each row represents a word, each column has the predicted probabilities for the context
     avg_accuracy = []
-
-    for idx in range(len(pred)):
-        # get the indices (which correspond to tokenized words)
-        actual_context = [i for i, x in enumerate(actual[idx]) if x == 1]
-        actual_context = set(actual_context)
+    for idx in range(len(actual)):
+        # get the indices, which there might be repeats of
+        actual_context = set(actual[idx])
 
         # get the top (num distinct context predictions) predicted probabilities
         # that's because a context might contain multiple of the same word, e.g. "the very very big bad wolf"
         # so we see how many distinct words there actually are, then compare to see if our highest probabilities match them
-        pred_top_n = sorted(range(len(pred[idx])), key=lambda i: pred[idx][i])[-len(actual_context):]
+        np_array_predicted = np.array(pred[idx])
+        pred_top_n_ind = np.argpartition(np.array(np_array_predicted), -len(actual_context))[-len(actual_context):]
+        pred_top_n = np_array_predicted[pred_top_n_ind]
+        
+        # sorted_pred_context = sorted(pred[idx],reverse=True)
+        # pred_top_n = sorted_pred_context[:len(actual_context)]
 
         intersection = actual_context.intersection(pred_top_n)
         union = actual_context.union(pred_top_n)
@@ -223,6 +228,74 @@ def train_epoch(
     # keep track of the model predictions for computing accuracy
     pred_labels = []
     target_labels = []
+    overall_accuracy = []
+
+
+    # only load in data needed here to save memory
+    encoded_words = []
+    encoded_context = []
+
+    # extract the first 1500000*(1-args.val_size) training data
+    if training:
+        i = 0
+        with open("encoded_words.txt", "r") as f_words:
+            for word in f_words:
+                word = word.strip()  
+                encoded_words.append(word)
+                i += 1
+                if i > int(1500000*(1-args.val_size)):
+                    break
+        i = 0
+        with open("encoded_context.txt", "r") as f_context:
+            for context in f_context:
+                context = context.strip()
+                context = context.split(" ")
+                # transform string back to int
+                context = list(map(int, context))
+                context = np.array(context)
+                encoded_context.append(context)
+                i += 1
+                if i > int(1500000*(1-args.val_size)):
+                    break
+  
+    # extract the training data between 1500000*(1-args.val_size) > n > 1500000
+    else:
+        i = 0
+        with open("encoded_words.txt", "r") as f_words:
+            for word in f_words:
+                i += 1
+                if i > int(1500000*(1-args.val_size)):
+                    word = word.strip()  
+                    encoded_words.append(word)
+                    
+                if i > 1500000:
+                    break
+        i = 0
+        with open("encoded_context.txt", "r") as f_context:
+            for context in f_context:
+                i += 1
+                if i > int(1500000*(1-args.val_size)):
+                    context = context.strip()
+                    context = context.split(" ")
+                    # transform string back to int
+                    context = list(map(int, context))
+                    context = np.array(context)
+                    encoded_context.append(context)
+                if i > 1500000:
+                    break
+
+    # transform string back to int
+    encoded_words = list(map(int, encoded_words))
+    encoded_words = np.array(encoded_words)
+    encoded_contex = np.array(encoded_context)  
+   
+    # convert everything to tensors
+    if training:
+        dataset = TensorDataset(torch.from_numpy(np.array(encoded_words)), torch.from_numpy(np.array(encoded_contex)))
+    else:
+        dataset = TensorDataset(torch.from_numpy(np.array(encoded_words)), torch.from_numpy(np.array(encoded_contex)))
+
+    loader = DataLoader(dataset, shuffle=True, batch_size=args.batch_size)
 
     # iterate over each batch in the dataloader
     # NOTE: you may have additional outputs from the loader __getitem__, you can modify this
@@ -235,11 +308,12 @@ def train_epoch(
         # pred_logits should be a matrix with dimensions batch_size x |vocab| with multiple 1's in each row, each representing a context word.
         # pred_logits = model(inputs, labels)
         pred_logits = model(inputs)
+
         # transform labels from B x (2*context_window) to B x |V|
-        labels = data_utils.token_to_multihot(labels, args.vocab_size)
+        mulithot_encoded_labels = data_utils.token_to_multihot(labels, args.vocab_size)
 
         # calculate prediction loss
-        loss = criterion(pred_logits, labels)
+        loss = criterion(pred_logits, mulithot_encoded_labels)
 
         # step optimizer and compute gradients during training
         if training:
@@ -251,10 +325,11 @@ def train_epoch(
         epoch_loss += loss.item()
 
         # compute metrics
-       # preds = pred_logits.argmax(-1)
-        #pred_labels.extend(preds.cpu().numpy())
+        # preds = pred_logits.argmax(-1)
+        # pred_labels.extend(preds.cpu().numpy())
         pred_labels.extend(pred_logits.detach().cpu().numpy())
-        target_labels.extend(labels.cpu().numpy())
+        batch_avg_acc = IoU_accuracy(pred_labels, labels)
+        overall_accuracy.append(batch_avg_acc)
 
     # calculate our own accuracy
     # acc = accuracy_score(pred_labels, target_labels)
@@ -262,10 +337,11 @@ def train_epoch(
     # print(str(type(pred_labels)) + "\n")
     # print("\ntarget: " + str(target_labels))
     # print(str(type(target_labels)) + "\n")
-    acc = IoU_accuracy(pred_labels, target_labels)
+    avg_acc = sum(overall_accuracy)/len(overall_accuracy)  
     epoch_loss /= len(loader)
 
-    return epoch_loss, acc
+    return epoch_loss, avg_acc
+    
 
 
 def validate(args, model, loader, optimizer, criterion, device):
@@ -310,13 +386,15 @@ def main(args):
     # get optimizer
     criterion, optimizer = setup_optimizer(args, model)
 
-    # store validation accuracies
-    val_accuracies = []
-
     for epoch in range(args.num_epochs):
         # train model for a single epoch
         print(f"Epoch {epoch}")
+
+        # Per the slack message "you only need in vitro accuracy for the val set; you don't need to calcuate a train set accuracy..."
+        # https://uscviterbiclass.slack.com/archives/C03QP2U3BFV/p1665681457209679?thread_ts=1665671601.099869&cid=C03QP2U3BFV
+        # I am only calculating accuracy during the end of a epoch
         train_loss, train_acc = train_epoch(
+        # train_loss = train_epoch(
             args,
             model,
             loaders["train"],
@@ -326,6 +404,9 @@ def main(args):
         )
 
         print(f"train loss : {train_loss} | train acc: {train_acc}")
+
+        with open("train_metrics.txt", "a") as f_train_loss:
+            f_train_loss.write(str(train_loss)+ " " + str(train_acc) + "\n")
 
         if epoch % args.val_every == 0:
             val_loss, val_acc = validate(
@@ -337,7 +418,10 @@ def main(args):
                 device,
             )
             print(f"val loss : {val_loss} | val acc: {val_acc}")
-            val_accuracies.append(val_acc)
+
+            # print here rather than storing and printing all at once to save memory
+            with open("val_metrics.txt", "a") as f_val_metrics:
+                f_val_metrics.write(str(val_loss) + " " + str(val_acc)+"\n")
 
             # ======================= NOTE ======================== #
             # Saving the word vectors to disk and running the eval
@@ -360,10 +444,6 @@ def main(args):
             ckpt_file = os.path.join(args.outputs_dir, "model.ckpt")
             print("saving model to ", ckpt_file)
             torch.save(model, ckpt_file)
-
-    with open("val_accuracy.txt", "w") as f_validation_accs:
-        for i in val_accuracies:
-            f_validation_accs.write(str(i)+"\n")
 
 
 if __name__ == "__main__":
@@ -398,7 +478,7 @@ if __name__ == "__main__":
         default='learned_word_vectors.txt'
     )
     parser.add_argument(
-        "--num_epochs", default=30, type=int, help="number of training epochs"
+        "--num_epochs", default=31, type=int, help="number of training epochs"
     )
     parser.add_argument(
         "--val_every",
