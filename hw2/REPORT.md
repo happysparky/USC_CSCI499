@@ -19,6 +19,8 @@ PA 2
 ##### The model has a very simple architecture that closely resembles the original skip-gram. It is simply composed of an embedded layer (initializing  with uniform distribution between -1 and 1) and a linear fully connected layer. For each batch, input words are passed into the model in a batch_size x 1 vector. This is passed into the embedding layer to return the embeddings for each word. Finally, these embeddings are passed into the linear fully connected layer. The output from the linear fully connected layer, along with the true context, is passed into BCE to calculate loss. An averaged IoU was used for calcuating accuracy. 
 
 #### **Hyperparameter Tuning**
+#####  TLDR: no matter what hyperparameters I explored, I oscillated between two states: getting 0 accuracy and having the training complete, or having training take a really long time and my laptop crashing. 
+
 ##### The important default parameters are as follows:
 ##### * vocab_size=3000
 ##### * batch_size=64
@@ -44,14 +46,14 @@ PA 2
 ##### * The emb_dim has an impact on how much memory is used for similar reasons as batch_size. I tried values ranging from 32 to 128 in powers of two. No noticable runtime or memory changes. 
 
 #### Metrics
+##### TLDR: no matter what hyperparameters I explored, I oscillated between two states: getting 0 accuracy and having the training complete, or having training take a really long time and my laptop crashing. 
+
 ##### As mentioned above, my laptop kept crashing when trying to train my model. In addition to hyperparameter tuning, some other ways I tried to improve the memory usage and speed up training are:
 ##### * An assumption I made is that I only considered windows with no padding. That is, when creating (word, context) pairs, if the word was padding or the context contained padding, then I did not add that (word, context) pair to the training data.
 
 #####  * I added a flag --save_encodings. By default, this is set to false, and so when it's not included in the list arguments passed in, my machine uses three .txt files, encoded_context.txt, encoded_words.txt, and index_to_vocab.txt, that contain the encoded data to speed up the training process. However, if you change the vocab size, then you'll have to call --save_encodings to re-save the encodings based off the new data. 
 
-##### * Per Thomason's Slack reply "you only need in vitro accuracy for the val set; you don't need to calcuate a train set accuracy..."
-##### (can be found here: https://uscviterbiclass.slack.com/archives/C03QP2U3BFV/p1665681457209679?thread_ts=1665671601.099869&cid=C03QP2U3BFV)
-##### at one point I only calculated accuracy every val_every epochs, because calculating the IoU accuracy was slow. Calculating IoU accuracy was slow because of I had to get the indices of the words that actually appear around the current word from the actual_context, then sort the probabilities in the predicted context and take the top probabilities there. I later reverted this change because there weren't any noticable speed ups, I wanted to keep track of the accuracy, and the directions did say to report training accuracy as well as validation accuracy. 
+##### * Per Thomason's Slack reply "you only need in vitro accuracy for the val set; you don't need to calcuate a train set accuracy..." (can be found here: https://uscviterbiclass.slack.com/archives/C03QP2U3BFV/p1665681457209679?thread_ts=1665671601.099869&cid=C03QP2U3BFV) at one point I only calculated accuracy every val_every epochs, because calculating the IoU accuracy was slow. Calculating IoU accuracy was slow because of I had to get the indices of the words that actually appear around the current word from the actual_context, then sort the probabilities in the predicted context and take the top probabilities there. I later reverted this change because there weren't any noticable speed ups, I wanted to keep track of the accuracy, and the directions did say to report training accuracy as well as validation accuracy. 
 
 ##### * To further optimize IoU_accuracy's runtime, I used two tricks: I passed in the indices of the actual context directly (as opposed to converting them back from their multihot encoded format) and I used numpy's argpartition() method to efficiently partition the list of predicted probabilities. 
 
@@ -61,6 +63,8 @@ PA 2
 
 ##### * Finally, I cut down the number of training instances because even if it was slow, I just wanted *some* results rather than having my laptop crash on me partway through training. In my code, I hard code the amount of training instances to consider to be 1.5 million. This move sacrifices accuracy, but I was able to get the code runing on my laptop with the following hyperparameters: 
 ##### `python train_xtreme_memory_saving.py --data_dir=books/ --analogies_fn analogies_v3000_1309.json --vocab_size=3000 --batch_size=64 --num_epochs=20 --val_every=5 --save_every=5 --val_size=0.3 --emb_dim=64 --window_size=4`
+
+##### I know it's after the assignment's due, but if you've got any additional ways to optimize the code I'd be interested in hearing because I'll probably need it for future assignments...
 
 #### **Performance**
 ##### All metrics are harvested from the above instance, which took ~14 hours to run. Results can be found in the folder batch_64_epochs_20_val_0.3_emb_dim_64_results. 
