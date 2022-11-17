@@ -43,6 +43,7 @@ class Encoder(nn.Module):
         # h_n is 1 x batch_size x emb_dim
         # c_n is 1 x batch_size x emb_dim
         output, (h_n, c_n) = self.lstm(embeds)    
+
         return h_n, c_n
 
 
@@ -81,7 +82,6 @@ class Decoder(nn.Module):
         self.target_fc = nn.Linear(hidden_dim, targets_size)
 
     def forward(self, action, target, h_n, c_n):
-
         # print("h_n size")
         # print(h_n.size())
         # print("c_n size")
@@ -99,6 +99,7 @@ class Decoder(nn.Module):
         # print(action.size())
         # print(action)
         # print(self.actions_size)
+
         action_emb = self.actions_emb(action)
         target_emb = self.targets_emb(target)
         # print("action emb size")
@@ -115,6 +116,7 @@ class Decoder(nn.Module):
         # print("labels emb size")
         # print(labels_emb.size())
 
+        # Expected hidden[0] size (1, 5, 7), got [1, 3, 7]
         # h_n and c_n are  batch_size x 1 x emb_dim
         output, (h_n, c_n) = self.LSTM(labels_emb, (h_n, c_n)) # plus either hidden, or (hidden, cell))
         
@@ -129,6 +131,9 @@ class Decoder(nn.Module):
         # print(pred_action.size())
         # print("pred target")
         # print(pred_target.size())
+
+        # pred_action is of dimensions batch_size x actions_size
+        # pred_target is of dimensions batch_size x targets_size
         return pred_action, pred_target, h_n, c_n
         
 
@@ -153,14 +158,14 @@ class EncoderDecoder(nn.Module):
 
     def forward(self, instructions, labels, training):
         # instructions is batch_size x len_cutoff
-        h_n, c_n = self.encoder(instructions)
+        h_n, c_n = self.encoder(instructions.to(self.device))
 
         # tensor for predicted actions and targets
 
         # dimensions batch_size x longest_len_episode x actions/target size
         # labels.size(1)/2 because it's twice as long as it really is
-        all_pred_actions = torch.zeros((int(labels.size(0)), int(labels.size(1)/2), self.actions_size))
-        all_pred_targets = torch.zeros((int(labels.size(0)), int(labels.size(1)/2), self.targets_size))
+        all_pred_actions = torch.zeros((self.batch_size, int(labels.size(1)/2), self.actions_size))
+        all_pred_targets = torch.zeros((self.batch_size, int(labels.size(1)/2), self.targets_size))
         
         # only have to slide along the columns. Batching will mean that it steps through all of the columns at the same time,
         # so it'll do column 1 for all rows at the same time, col 2 for all rows at the same time, etc. 
@@ -169,41 +174,63 @@ class EncoderDecoder(nn.Module):
 
         # get number_of_labels_in_each_episode predictions back 
         # since we made all of them the same length we go past to padding sometimes
-  
         for idx in range(0, int(labels.size(1)), 2):
 
             # only use true labels for teacher forcing if training
             if idx == 0 or training:
 
-                # pred_action is of dimension batch_size x action/target size
-                pred_action, pred_target, h_n, c_n = self.decoder(labels[:, idx:idx+1], labels[:, idx+1:idx+2], h_n, c_n)
+                # pred_action is of dimension batch_size x action or batch_size x target size
+                pred_action, pred_target, h_n, c_n = self.decoder(labels[:, idx:idx+1].to(self.device), 
+                      labels[:, idx+1:idx+2].to(self.device), 
+                      h_n.to(self.device),
+                      c_n.to(self.device))
+
                 # print()
+                # print(labels[:, idx:idx+1].size())
+                # print(labels[:, idx:idx+1])
+                # print(pred_action)
+                # print(torch.reshape(torch.argmax(pred_action, axis=1), (self.batch_size, 1)))
+                # pred_action = pred_action[:, torch.argmax(pred_action, axis=1)]
                 # print(pred_action.size())
                 # print(pred_action)
+                # print(labels[:, idx+1:idx+2].size())
                 # print(pred_target.size())
                 # print(pred_target)
-                # print()
-
+                # print()             
 
             else:
-                pred_action, pred_target, h_n, c_n = self.decoder(pred_action, pred_target, h_n, c_n)
+                # pred_action is of dimension batch_size x action or batch_size x target size
+                pred_action, pred_target, h_n, c_n = self.decoder(pred_action.to(self.device),
+                        pred_target.to(self.device),
+                        h_n.to(self.device), 
+                        c_n.to(self.device))
 
+            # greedy decoding
+            if not training:
+
+                # why do we do this? shouldn't it be the same without this 
                 # turn the result into a probabilitiy distribution
-                pred_action = self.logsoftmax(pred_action)
+                pred_action = self.logsoftmax(pred_action.to(self.device))
                 # get the indices of the action with the highest probability 
                 pred_action_indexes = torch.argmax(pred_action, axis=1)
                 
                 # create a batch_size x actions_size array of 0's
-                converted_pred_actions = torch.zeros((self.batch_size, self.actions_size))
+                pred_action = torch.zeros((self.batch_size, self.actions_size))
                 # one hot encode the index with the highest probability
-                converted_pred_actions[:, pred_action_indexes] = 1
+                pred_action[:, pred_action_indexes] = 1
 
                 pred_target = self.logsoftmax(pred_target)
                 pred_target_indexes = torch.argmax(pred_target, axis=1)
-                
-                converted_pred_targets = torch.zeros((self.batch_size, self.targets_size))
-                converted_pred_targets[:, pred_target_indexes] = 1
+                pred_target = torch.zeros((self.batch_size, self.targets_size))
+                pred_target[:, pred_target_indexes] = 1
 
+                # reshape:
+                # before: batch_size x action_size or batch_size x target_size, where the second dimension is the one hot encoding of the prediction
+                # after: batch_size x 1, where the second dimension is the prediction 
+                # pred_action = torch.reshape(torch.argmax(pred_action, axis=1), (self.batch_size, 1))
+                # pred_target = torch.reshape(torch.argmax(pred_target, axis=1), (self.batch_size, 1))
+                # pred_action = torch.reshape(torch.argmax(pred_action, axis=1), (self.batch_size, 1))
+                # pred_target = torch.reshape(torch.argmax(pred_target, axis=1), (self.batch_size, 1))
 
             # pred_action should be a batch_size x actions_size matrix.
             # each row is a 1 hot encoded vector if not training
@@ -213,10 +240,17 @@ class EncoderDecoder(nn.Module):
             # print(type(pred_action))
                     
             # since we're stepping by 2 the true "index" is divided by 2
+                # dimensions batch_size x longest_len_episode x actions/target size
+                # pred_action is of dimension batch_size x action or batch_size x target size
+
             all_pred_actions[:, int(idx/2), :] = pred_action
             all_pred_targets[:, int(idx/2), :] = pred_target
 
-
+            # reshape so when pred_action and pred_target are used in the next timestep they're in the correct format:
+            # before: batch_size x action_size or batch_size x target_size, where the second dimension is the one hot encoding of the prediction
+            # after: batch_size x 1, where the second dimension is the prediction 
+            pred_action = torch.reshape(torch.argmax(pred_action, axis=1), (self.batch_size, 1))
+            pred_target = torch.reshape(torch.argmax(pred_target, axis=1), (self.batch_size, 1))
 
         # convert numpy to tensor
         # all_pred_actions = all_pred_actions

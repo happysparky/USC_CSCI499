@@ -1,7 +1,7 @@
 import re
 import torch
-import numpy as np
 from collections import Counter
+import torch.nn.functional as functional
 
 
 def get_device(force_cpu, status=True):
@@ -93,22 +93,42 @@ def build_output_tables(train):
     index_to_targets = {targets_to_index[t]: t for t in targets_to_index}
     return actions_to_index, index_to_actions, targets_to_index, index_to_targets
 
-def prefix_match(pred_actions, pred_targets, labels):
+def prefix_match(pred_actions, pred_targets, true_actions, true_targets):
     # predicted and gt are sequences of (action, target) labels, the sequences should be of same length
     # computes how many matching (action, target) labels there are between predicted and gt
     # is a number between 0 and 1 
 
-    assert len(pred_actions) == (len(labels)-4)/2, "pred_actions != label"
-    assert len(pred_targets) == (len(labels)-4)/2, "pred_targets != label"
+    # I spent four hours figuring out how to properly do this matrix transformation i think i'm going insane 
 
+    # true_actions is of dimensions: batch_size x seq_len
+    # need to convert to same dimensions as pred_actions, which is: batch_size x seq_length x actions_size
+    # since the last dimension is a one hot encoding of true_actions's second dimension
 
-    true_actions = labels[2:-2:2]
-    true_targets = labels[3:-1:2]
+    true_actions = torch.unsqueeze(true_actions, dim=2)
+    true_targets = torch.unsqueeze(true_targets, dim=2)
+    true_actions = functional.one_hot(true_actions.max(dim=2).values.to(torch.int64), 11)
+    true_targets = functional.one_hot(true_targets.max(dim=2).values.to(torch.int64), 83)
 
-    for i in range(seq_length):
-        if true_actions[i] != pred_actions[i] or true_targets[i] != pred_targets[i]:
-            break
-    
-    pm = (1.0 / seq_length) * i
+    # must be the same datatype, and can't cast the true_actions/prediciton to floats for whatever reason 
+    pred_actions = pred_actions.type(torch.int64)
+    pred_targets = pred_targets.type(torch.int64)
 
-    return pm
+    assert pred_actions.size() == true_actions.size(), "actions not the same shape"
+    assert pred_targets.size() == true_targets.size(), "targets not the same shape"
+
+    avg_prefix_match = 0
+    for idx in range(pred_actions.size(0)):
+        prefix_match = 0
+        for jdx in range(pred_actions.size(1)):
+            # print("here")
+            # print()
+            # print(pred_actions[idx, jdx, :])
+            # print(true_actions[idx, jdx, :])
+            if (not torch.equal(true_actions[idx, jdx, :], pred_actions[idx, jdx, :])) or (not torch.equal(true_targets[idx, jdx, :], pred_targets[idx, jdx, :])):
+                break
+            prefix_match += 1
+        prefix_match /= pred_actions.size(1)
+        avg_prefix_match += prefix_match
+    avg_prefix_match /= pred_actions.size(0)
+
+    return avg_prefix_match

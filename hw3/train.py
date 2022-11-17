@@ -7,7 +7,6 @@ import json
 import numpy as np
 import pandas as pd
 from model import EncoderDecoder, Encoder, Decoder
-import torch.nn.functional as functional
 
 
 from utils import (
@@ -29,7 +28,8 @@ def encode_data(data, vocab_to_index, len_cutoff, actions_to_index, targets_to_i
 
     encoded_labels_seqs = np.zeros((len(data), (2*longest_episode_len)+4), dtype=np.int32)
 
-
+    # longest_k = 0
+    # longest_j = 0
     # loop through the data 
     i = 0
     for episode in data:
@@ -98,6 +98,13 @@ def encode_data(data, vocab_to_index, len_cutoff, actions_to_index, targets_to_i
         
         i += 1
 
+        # if k > longest_k:
+        #     longest_k = k
+        # if j > longest_j:
+        #     longest_j = j
+    # print("longest_k: " + str(longest_k))
+    # print("longest j: " + str(longest_j))
+
     # for row in range(len(encoded_labels_seqs)):
     #     print(np.max(encoded_labels_seqs[row]))
     # transform to an even array so it can be casted to a np array
@@ -131,7 +138,8 @@ def setup_dataloader(args):
 
     # Read in the training and validation data
     train_data, val_data = extract_train_val_splits(args.in_data_fn)
-
+    
+    
     # Tokenize the training set
     # Don't tokenize all data or validation data will leak into training!!
     vocab_to_index, index_to_vocab, len_cutoff = build_tokenizer_table(train_data)
@@ -148,6 +156,7 @@ def setup_dataloader(args):
     # Encode validation set inputs/outputs
     val_np_x, val_np_y = encode_data(val_data, vocab_to_index, len_cutoff, actions_to_index, targets_to_index)
 
+
     # convert val data to tensors
     val_dataset = TensorDataset(torch.from_numpy(val_np_x), torch.from_numpy(val_np_y))
 
@@ -157,6 +166,7 @@ def setup_dataloader(args):
     # Create dataloaders
     train_loader = DataLoader(train_dataset, shuffle=True, batch_size=args.batch_size)
     val_loader = DataLoader(val_dataset, shuffle=True, batch_size=args.batch_size)
+
 
     # Create maps for future reference
     maps = {
@@ -199,7 +209,7 @@ def setup_model(args, vocab_size, actions_size, targets_size, device):
         vocab_size=vocab_size,
         embedding_dim=args.emb_dim,
         hidden_dim=args.emb_dim
-    )
+    ).to(device)
 
     decoder = Decoder(
         device=device,
@@ -207,7 +217,7 @@ def setup_model(args, vocab_size, actions_size, targets_size, device):
         targets_size=targets_size,
         embedding_dim=args.emb_dim,
         hidden_dim=args.emb_dim,
-    )
+    ).to(device)
 
     model = EncoderDecoder(
         device = device,
@@ -216,7 +226,7 @@ def setup_model(args, vocab_size, actions_size, targets_size, device):
         actions_size = actions_size,
         targets_size = targets_size,
         batch_size=args.batch_size
-    )
+    ).to(device)
     
     return model
 
@@ -251,7 +261,7 @@ def train_epoch(
     action_criterion,
     target_criterion,
     device,
-    training=True,
+    training,
 ):
     """
     # TODO: implement function for greedy decoding.
@@ -276,6 +286,11 @@ def train_epoch(
     # NOTE: you may have additional outputs from the loader __getitem__, you can modify this
     counter = 0
     for (inputs, labels) in loader:
+        # print("here")
+        # print(inputs.size())
+        # print(inputs)
+        # print(labels.size())
+        # return
         if counter == int(len(loader)/2):
             print("halfway through this epoch!")
         elif counter == int(len(loader)/4):
@@ -283,15 +298,20 @@ def train_epoch(
         elif counter == int(3*len(loader)/4):
             print("3/4ths of the way through")
         counter += 1
+
+        # there's an error with the hidden layer sizes if the number of training instances isn't perfectly divisible by batch_size, so
+        # i'm ending the loop when we get to the extra training instances for when it's not divisible
+        if len(labels) != args.batch_size:
+            break
+
         # put model inputs to device
         inputs, labels = inputs.to(device), labels.to(device)
 
         # calculate the loss and train accuracy and perform backprop
         # NOTE: feel free to change the parameters to the model forward pass here + outputs
-        pred_actions, pred_targets = model(inputs, labels, training=training)
+        pred_actions, pred_targets = model(inputs, labels, training)
 
-        # print('here')
-        # print(pred_actions.size())
+
         # print(pred_actions)
         # print(labels.shape)
         # print(labels[:, 2:-2:2].shape)
@@ -340,10 +360,10 @@ def train_epoch(
         # action labels should by every other index start from index 2 up to but not including the 2nd last element in the list
         # target labels should be every other index strting from index 3 up to but not includin ghte last element in the list
 
-        pred_actions = torch.flatten(pred_actions, end_dim=1)
-        true_actions = torch.flatten(true_actions).type(torch.LongTensor)
-        pred_targets = torch.flatten(pred_targets, end_dim=1)
-        true_targets = torch.flatten(true_actions).type(torch.LongTensor)
+        pred_actions_flattened = torch.flatten(pred_actions, end_dim=1)
+        true_actions_flattened = torch.flatten(true_actions).type(torch.LongTensor)
+        pred_targets_flattened = torch.flatten(pred_targets, end_dim=1)
+        true_targets_flattened = torch.flatten(true_targets).type(torch.LongTensor)
         # print(pred_actions.size())
         # print(pred_actions)
         # print(true_actions.size())
@@ -352,8 +372,12 @@ def train_epoch(
         # print(pred_targets.size())
         # print(true_targets.size())
 
-        action_loss = action_criterion(pred_actions, true_actions)
-        target_loss = target_criterion(pred_targets, true_targets)
+        # pred_ations_flattened is of shape batch_size * seq_len, actions_size
+        # pred_targets_flattened is of size batch_size * seq_len, targets_size
+        # true_actions_flattened is of size batch_size * seq_len
+        # true_targets_flatteed is of size batch_size * seq_len
+        action_loss = action_criterion(pred_actions_flattened, true_actions_flattened)
+        target_loss = target_criterion(pred_targets_flattened, true_targets_flattened)
 
         # step optimizer and compute gradients during training
         if training:
@@ -371,7 +395,7 @@ def train_epoch(
         # TODO: add code to log these metrics
         if not training:
             exact_match = 0 # TODO
-            prefix_em = prefix_match(pred_actions, pred_targets, labels)
+            prefix_em = prefix_match(pred_actions.to(device), pred_targets.to(device), true_actions.to(device), true_targets.to(device))
             # acc = 0.0
 
             # logging
@@ -381,7 +405,7 @@ def train_epoch(
         epoch_loss /= len(loader)
         epoch_acc /= len(loader)
 
-    return epoch_loss, epoch_acc
+    return 0, 0# epoch_loss, epoch_acc
 
 
 def validate(args, model, loader, optimizer, action_criterion, target_criterion, device):
@@ -408,7 +432,8 @@ def train(args, model, loaders, optimizer, action_criterion, target_criterion, d
     # Train model for a fixed number of epochs
     # In each epoch we compute loss on each sample in our dataset and update the model
     # weights via backpropagation
-
+    model.train()
+    
     counter = 0
     for epoch in tqdm.tqdm(range(args.num_epochs)):
         # train single epoch
@@ -423,6 +448,7 @@ def train(args, model, loaders, optimizer, action_criterion, target_criterion, d
             action_criterion,
             target_criterion,
             device,
+            training=True
         )
 
         # some logging
@@ -453,7 +479,7 @@ def train(args, model, loaders, optimizer, action_criterion, target_criterion, d
 
 def main(args):
     device = get_device(args.force_cpu)
-
+    print("Using gpu: " + str(torch.cuda.get_device_name(0)))
     # get dataloaders
     train_loader, val_loader, maps, len_cutoff = setup_dataloader(args)
     loaders = {"train": train_loader, "val": val_loader}
@@ -489,7 +515,7 @@ if __name__ == "__main__":
         "--model_output_dir", type=str, help="where to save model outputs"
     )
     parser.add_argument(
-        "--batch_size", type=int, default=62, help="size of each batch in loader"
+        "--batch_size", type=int, default=5, help="size of each batch in loader"
     )
     parser.add_argument("--force_cpu", action="store_true", help="debug mode")
     parser.add_argument("--eval", action="store_true", help="run eval")
@@ -504,7 +530,7 @@ if __name__ == "__main__":
     # ===================================================== #
 
     parser.add_argument(
-        "--emb_dim", type=int, default=32, help="number of features/columns to learn for every vector (each vector represents a word)"
+        "--emb_dim", type=int, default=7, help="number of features/columns to learn for every vector (each vector represents a word)"
     )
 
     parser.add_argument(

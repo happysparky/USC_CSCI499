@@ -184,7 +184,6 @@ class EncoderDecoder(nn.Module):
                 # print(pred_target)
                 # print()
 
-
             else:
                 pred_action, pred_target, h_n, c_n = self.decoder(pred_action, pred_target, h_n, c_n)
 
