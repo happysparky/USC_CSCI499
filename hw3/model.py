@@ -2,6 +2,7 @@
 import numpy as np
 import torch.nn as nn
 import torch
+import random
 
 class Encoder(nn.Module):
     """
@@ -144,7 +145,7 @@ class EncoderDecoder(nn.Module):
     TODO: edit the forward pass arguments to suit your needs
     """
 
-    def __init__(self, device, encoder, decoder, actions_size, targets_size, batch_size):
+    def __init__(self, device, encoder, decoder, actions_size, targets_size, batch_size, teacher_forcing_prob):
         super(EncoderDecoder, self).__init__()
 
         self.device = device
@@ -153,6 +154,7 @@ class EncoderDecoder(nn.Module):
         self.actions_size = actions_size
         self.targets_size = targets_size
         self.batch_size = batch_size
+        self.teacher_forcing_prob = float(teacher_forcing_prob)
         # set dim=1 to softmax along each row 
         self.logsoftmax = nn.LogSoftmax(dim=1)
 
@@ -160,7 +162,7 @@ class EncoderDecoder(nn.Module):
         # instructions is batch_size x len_cutoff
         h_n, c_n = self.encoder(instructions.to(self.device))
 
-        # tensor for predicted actions and targets
+        # tensor to hold all predicted actions and targets
 
         # dimensions batch_size x longest_len_episode x actions/target size
         # labels.size(1)/2 because it's twice as long as it really is
@@ -177,7 +179,7 @@ class EncoderDecoder(nn.Module):
         for idx in range(0, int(labels.size(1)), 2):
 
             # only use true labels for teacher forcing if training
-            if idx == 0 or training:
+            if idx == 0 or (training and random.random() < self.teacher_forcing_prob):
 
                 # pred_action is of dimension batch_size x action or batch_size x target size
                 pred_action, pred_target, h_n, c_n = self.decoder(labels[:, idx:idx+1].to(self.device), 

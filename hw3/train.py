@@ -1,12 +1,13 @@
 import tqdm
 import torch
 import argparse
-from sklearn.metrics import accuracy_score
 from torch.utils.data import TensorDataset, DataLoader
 import json
 import numpy as np
 import pandas as pd
 from model import EncoderDecoder, Encoder, Decoder
+import torch.nn.functional as functional
+import matplotlib.pyplot as plt
 
 
 from utils import (
@@ -67,13 +68,13 @@ def encode_data(data, vocab_to_index, len_cutoff, actions_to_index, targets_to_i
                     if j == len_cutoff-1:
                         break
                 
-            encoded_labels_seqs[i][k] = actions_to_index[label[0]]
+            encoded_labels_seqs[i][k] = actions_to_index[label[0]] if label[0] in actions_to_index else actions_to_index["<unk>"]
             # if encoded_labels_seqs[i][k] > 10:
             #     print("3")
             #     print(encoded_labels_seqs[i][k])
             #     return
             k += 1
-            encoded_labels_seqs[i][k] = targets_to_index[label[1]]
+            encoded_labels_seqs[i][k] = targets_to_index[label[1]] if label[1] in targets_to_index else targets_to_index["<unk>"]
             # if encoded_labels_seqs[i][k] > 10:
             #     print("4")
             #     print(encoded_labels_seqs[i][k])
@@ -112,11 +113,19 @@ def encode_data(data, vocab_to_index, len_cutoff, actions_to_index, targets_to_i
     return encoded_instructions_seqs, encoded_labels_seqs
 
 
-def extract_train_val_splits(input_data):
+def extract_train_val_splits(input_data, train_cutoff, val_cutoff):
     # open file and get raw data
     raw_data = open(input_data)
     loaded_data = json.load(raw_data)
     raw_data.close()
+
+    train_cutoff = int(train_cutoff)
+    val_cutoff = int(val_cutoff)
+    if train_cutoff < len(loaded_data["train"]):
+        loaded_data["train"] = loaded_data["train"][:train_cutoff]
+    if val_cutoff < len(loaded_data["valid_seen"]):
+        loaded_data["valid_seen"] = loaded_data["valid_seen"][:val_cutoff]
+
     return loaded_data["train"], loaded_data["valid_seen"]
 
 
@@ -137,12 +146,12 @@ def setup_dataloader(args):
     # ===================================================== #
 
     # Read in the training and validation data
-    train_data, val_data = extract_train_val_splits(args.in_data_fn)
+    train_data, val_data = extract_train_val_splits(args.in_data_fn, args.train_cutoff, args.val_cutoff)
     
     
     # Tokenize the training set
     # Don't tokenize all data or validation data will leak into training!!
-    vocab_to_index, index_to_vocab, len_cutoff = build_tokenizer_table(train_data)
+    vocab_to_index, index_to_vocab, len_cutoff = build_tokenizer_table(train_data, vocab_size=int(args.vocab_size))
 
     actions_to_index, index_to_actions, targets_to_index, index_to_targets = build_output_tables(train_data)
 
@@ -225,7 +234,8 @@ def setup_model(args, vocab_size, actions_size, targets_size, device):
         decoder = decoder,
         actions_size = actions_size,
         targets_size = targets_size,
-        batch_size=args.batch_size
+        batch_size=args.batch_size,
+        teacher_forcing_prob=args.teacher_forcing_prob
     ).to(device)
     
     return model
@@ -261,7 +271,9 @@ def train_epoch(
     action_criterion,
     target_criterion,
     device,
-    training,
+    actions_size,
+    targets_size,
+    training
 ):
     """
     # TODO: implement function for greedy decoding.
@@ -281,6 +293,7 @@ def train_epoch(
 
     epoch_loss = 0.0
     epoch_acc = 0.0
+
 
     # iterate over each batch in the dataloader
     # NOTE: you may have additional outputs from the loader __getitem__, you can modify this
@@ -394,21 +407,21 @@ def train_epoch(
         """
         # TODO: add code to log these metrics
         if not training:
-            exact_match = 0 # TODO
-            prefix_em = prefix_match(pred_actions.to(device), pred_targets.to(device), true_actions.to(device), true_targets.to(device))
-            # acc = 0.0
-
+            prefix_em = prefix_match(pred_actions.to(device), pred_targets.to(device), true_actions.to(device), true_targets.to(device), actions_size, targets_size)
+           
             # logging
-            epoch_loss += (action_loss+target_loss)/2
             epoch_acc += prefix_em
-
+            epoch_acc /= len(loader)
+        
+        # loss should be reported for all
+        epoch_loss += (action_loss+target_loss)/2
         epoch_loss /= len(loader)
-        epoch_acc /= len(loader)
+        
 
-    return 0, 0# epoch_loss, epoch_acc
+    return epoch_loss, epoch_acc
 
 
-def validate(args, model, loader, optimizer, action_criterion, target_criterion, device):
+def validate(args, model, loader, optimizer, action_criterion, target_criterion, device, actions_size, targets_size):
     # set model to eval mode
     model.eval()
 
@@ -422,24 +435,27 @@ def validate(args, model, loader, optimizer, action_criterion, target_criterion,
             action_criterion,
             target_criterion,
             device,
-            training=False,
+            actions_size, 
+            targets_size,
+            training=False
         )
 
     return val_loss, val_acc
 
 
-def train(args, model, loaders, optimizer, action_criterion, target_criterion, device):
+def train(args, model, loaders, optimizer, action_criterion, target_criterion, device, actions_size, targets_size):
     # Train model for a fixed number of epochs
     # In each epoch we compute loss on each sample in our dataset and update the model
     # weights via backpropagation
-    model.train()
-    
-    counter = 0
-    for epoch in tqdm.tqdm(range(args.num_epochs)):
+
+    train_losses = []
+    val_losses = []
+    val_accs = []
+    for epoch in tqdm.tqdm(range(int(args.num_epochs))):
+        model.train()
+
         # train single epoch
         # returns loss for action and target prediction and accuracy
-        print("on epoch: " + str(counter))
-        counter += 1
         train_loss, train_acc = train_epoch(
             args,
             model,
@@ -448,11 +464,20 @@ def train(args, model, loaders, optimizer, action_criterion, target_criterion, d
             action_criterion,
             target_criterion,
             device,
+            actions_size,
+            targets_size,
             training=True
         )
 
         # some logging
+
+        # convert from 0d tensor to number
+        train_loss = train_loss.item()
+
         print(f"train loss : {train_loss}")
+        with open(args.model_output_dir + "/train_loss.txt", "a") as f_out:
+          f_out.write(str(train_loss) + "\n")
+        train_losses.append(train_loss)
 
         # run validation every so often
         # during eval, we run a forward pass through the model and compute
@@ -466,28 +491,56 @@ def train(args, model, loaders, optimizer, action_criterion, target_criterion, d
                 action_criterion,
                 target_criterion,
                 device,
+                actions_size,
+                targets_size
             )
 
+            val_loss = val_loss.item()
             print(f"val loss : {val_loss} | val acc: {val_acc}")
+            with open(args.model_output_dir+"/val_metrics.txt", "a") as f_out:
+              f_out.write(str(val_loss) + " " + str(val_acc) + "\n")
+            val_losses.append(val_loss)
+            val_accs.append(val_acc)
 
     # ================== TODO: CODE HERE ================== #
     # Task: Implement some code to keep track of the model training and
     # evaluation loss. Use the matplotlib library to plot
     # 3 figures for 1) training loss, 2) validation loss, 3) validation accuracy
     # ===================================================== #
+    fig, axs = plt.subplots(3)
+    fig.suptitle("Model Training Trends")
 
+
+
+    axs[0].plot(range(int(args.num_epochs)), train_losses)
+    axs[0].set_title("Training Loss")
+    cpy = range(len(val_losses))
+    val_x_axis = [5*i for i in cpy]
+    axs[1].plot(range(len(val_x_axis)), val_losses, "tab:orange")
+    axs[1].set_title("Validation Loss")
+    axs[2].plot(range(len(val_x_axis)), val_accs, "tab:green")
+    axs[2].set_title("Validation Acc")
+
+    for ax in axs.flat:
+        ax.set(xlabel="Epoch")
+
+    fig.tight_layout()
+    plt.savefig(args.model_output_dir+"/train_val_metrics_plot.png")
 
 def main(args):
     device = get_device(args.force_cpu)
-    print("Using gpu: " + str(torch.cuda.get_device_name(0)))
+    # print("Using gpu: " + str(torch.cuda.get_device_name(0)))
     # get dataloaders
     train_loader, val_loader, maps, len_cutoff = setup_dataloader(args)
     loaders = {"train": train_loader, "val": val_loader}
 
     # print(maps["actions_to_index"])
 
+    print("len(maps['actions_to_index']): " + str(len(maps["vocab_to_index"])))
+    print("len(maps['actions_to_index']): " + str(len(maps["actions_to_index"])))
+    print("len(maps['targets_to_index']): " + str(len(maps["targets_to_index"])))
+
     # build model
-    # subtract 3 because we don't want to include start/end/padding
     model = setup_model(args, len(maps["vocab_to_index"]), len(maps["actions_to_index"]), len(maps["targets_to_index"]), device)
     print(model)
 
@@ -505,7 +558,7 @@ def main(args):
             device,
         )
     else:
-        train(args, model, loaders, optimizer, action_criterion, target_criterion, device)
+        train(args, model, loaders, optimizer, action_criterion, target_criterion, device, len(maps["actions_to_index"]), len(maps["targets_to_index"]))
 
 
 if __name__ == "__main__":
@@ -515,13 +568,13 @@ if __name__ == "__main__":
         "--model_output_dir", type=str, help="where to save model outputs"
     )
     parser.add_argument(
-        "--batch_size", type=int, default=5, help="size of each batch in loader"
+        "--batch_size", type=int, default=64, help="size of each batch in loader"
     )
     parser.add_argument("--force_cpu", action="store_true", help="debug mode")
     parser.add_argument("--eval", action="store_true", help="run eval")
     parser.add_argument("--num_epochs", default=1000, help="number of training epochs")
     parser.add_argument(
-        "--val_every", default=1, help="number of epochs between every eval loop"
+        "--val_every", default=5, help="number of epochs between every eval loop"
     )
 
     # ================== TODO: CODE HERE ================== #
@@ -530,13 +583,28 @@ if __name__ == "__main__":
     # ===================================================== #
 
     parser.add_argument(
-        "--emb_dim", type=int, default=7, help="number of features/columns to learn for every vector (each vector represents a word)"
+        "--emb_dim", type=int, default=128, help="number of features/columns to learn for every vector (each vector represents a word)"
     )
 
     parser.add_argument(
         "--learning_rate", type=float, default=0.001, help="how often to stepr"
     )
 
+    parser.add_argument(
+        "--train_cutoff", type=int, default=1000000000, help="number of training instances to consider"
+    )
+
+    parser.add_argument(
+        "--val_cutoff", type=int, default=1000000000, help="number of validation instances to consider"
+    )
+
+    parser.add_argument(
+        "--vocab_size", type=int, default=1000, help="number words in our vocabulary to consider"
+    )
+    
+    parser.add_argument(
+        "--teacher_forcing_prob", type=int, default=0.9, help="probability of using teacher forcing during training"
+    )
     args = parser.parse_args()
 
     main(args)

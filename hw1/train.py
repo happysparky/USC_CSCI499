@@ -19,8 +19,14 @@ from utils import (
 def encode_data(data, vocab_to_index, seq_len, actions_to_index, targets_to_index):
 
     # create encoded instruction and labels
-    encoded_instruction = np.zeros((len(data), seq_len), dtype=np.int32)
-    encoded_label = np.zeros((len(data), 2), dtype=np.int32)
+    # fix data later - read in data properly!!
+    count = 0
+    for episode in data:
+        for _,_ in episode:
+            count += 1
+
+    encoded_instruction = np.zeros((count, seq_len), dtype=np.int32)
+    encoded_label = np.zeros((count, 2), dtype=np.int32)
 
     # loop through the data 
     i = 0
@@ -39,11 +45,13 @@ def encode_data(data, vocab_to_index, seq_len, actions_to_index, targets_to_inde
                     j += 1
                     if j == seq_len-1:
                         break
-
+            
             # encode the end of the sentence
             encoded_instruction[i][j] = vocab_to_index["<end>"]
             encoded_label[i][0] = actions_to_index[label[0]]
             encoded_label[i][1] = targets_to_index[label[1]]
+            # add this in later i += 1
+            i += 1
 
     return encoded_instruction, encoded_label
 
@@ -130,6 +138,8 @@ class SemanticUnderstanding(torch.nn.Module):
         self.embedding_dim = embedding_dim
 
         # embedding layer
+        # really a lookup table mapping each token/word to a vector of size embedding_dim
+        # generally don't want embedding vector to be larger than size of data bc then it'll just learn directly
         self.embedding = torch.nn.Embedding(vocab_size, embedding_dim, padding_idx=0)
 
         # maxpool layer
@@ -150,25 +160,48 @@ class SemanticUnderstanding(torch.nn.Module):
 
     def forward(self, instruction):
         # instruction is a matrix that is batch_size x len_cutoff
-        # embedding layer adds another dimension: batch_size x len_cutoff x embedding_dim
         # print("instructions size: " + str(instruction.size()))
+        # instruction is a 2D array of encoded instructions
+
+        # instruction is a 2D array: b x L, where b is the batch size and L is the length of the sentence we're considering
         embeds = self.embedding(instruction)
 
-        # print("embeds size: " + str(embeds.size()))
-        _, (h_n,_) = self.lstm(embeds)
+        #embeds is a b x L x emd_dim, where emb_dim are the number of features for every token that we want to learn
 
-        # print("h_n size: " + str(h_n.size()))
+        # print("embeds size: " + str(embeds.size()))
+
+        # we pass in embds into the lstm, which outputs a 3D matrix with axes 
+        # (N,L,D∗Hout) when batch_first=True, where 
+        # N = batch size, L = sequence length, and Hout is the hidden size (D is 2 is bidirectional, 1 otherwise)
+        # one of the outputs is h_n, which is a tensor of shape 
+        # (D*num_layers, N, Hout) containing the final hidden state for each element in the sequence
+        
+        # there are many layers, each successive layer takes the previous as input
+        # the last layer, which we want, has the learned information from all previous inputs/tokens
+
+        # h_n is the last hidden state, but can access the others 
+        # (D∗num_layers, N, Hout) 
+
+        # hidden is 128 x 24 x 128
+        # h_n is 1 x 128 x 128
+        hidden, (h_n, _) = self.lstm(embeds)      
+
         # maxpooled_embeds = self.maxpool(embeds)
         # out = self.fc(maxpooled_embeds).squeeze(1) # squeeze out the singleton length dimension that we maxpool'd over
+        
         # print(out.size())
-        out = self.fc(h_n)
+        # out is 128 x 24 x 88 for hidden
+        # out is 1 x 128 x 88 for h_n
+        out = self.fc(hidden)
 
         # action_out = self.fc1(h_n)
         # target_out = self.fc2(h_n)
-        # print("out size:" + str(out.size()))
+
+        # out is 128 x 24 x 88 for hidden after squeezing
+        # out is 128 x 88 for h_n after squeezing
         out = out.squeeze()
-        action_tensor = out[:,:self.n_actions]
-        target_tensor = out[:,self.n_actions:]
+        action_tensor = out[:,:,:self.n_actions]
+        target_tensor = out[:,:,self.n_actions:]
         
         # return converted tensors
         return action_tensor, target_tensor
@@ -245,6 +278,15 @@ def train_epoch(
         # calculate the action and target prediction loss
         # NOTE: we assume that labels is a tensor of size Bx2 where labels[:, 0] is the
         # action label and labels[:, 1] is the target label
+        # action_loss = action_criterion(actions_out.squeeze(), labels[:, 0].long())
+        # target_loss = target_criterion(targets_out.squeeze(), labels[:, 1].long())
+
+
+        # squeezing does nothing for actions_out, which is still 128 x 24 x 8
+        # same with targets out, which is 128 x 24 x 80
+        print(actions_out.size())
+        actions_out.squeeze()
+        print(actions_out.size())
         action_loss = action_criterion(actions_out.squeeze(), labels[:, 0].long())
         target_loss = target_criterion(targets_out.squeeze(), labels[:, 1].long())
 
@@ -368,8 +410,8 @@ def train(args, model, loaders, optimizer, action_criterion, target_criterion, d
                 f"val action acc : {val_action_acc} | val target accs: {val_target_acc}"
             )
 
-            val_loss_list.append(train_action_loss+train_target_loss)
-            val_acc_list.append(train_action_acc+train_target_acc)
+            val_loss_list.append(val_action_loss+val_target_loss)
+            val_acc_list.append(val_action_acc+val_target_acc)
 
     # ================== TODO: CODE HERE ================== #
     # Task: Implement some code to keep track of the model training and
@@ -445,7 +487,7 @@ if __name__ == "__main__":
     # parameters you may need here
     # ===================================================== #
     parser.add_argument(
-        "--emb_dim", type=int, default=128, help="number of 'columns' to learn for every feature vector"
+        "--emb_dim", type=int, default=128, help="number of features/columns to learn for every vector (each vector represents a word)"
     )
     parser.add_argument(
         "--learning_rate", type=float, default=0.001, help="how often to stepr"

@@ -37,7 +37,6 @@ def build_tokenizer_table(train, vocab_size=1000):
     word_list = []
 
     # store the longest length of all words from each instruction in an episode
-
     max_len = 0
     for episode in train:
         curr_max_len = 0
@@ -81,19 +80,22 @@ def build_output_tables(train):
             targets.add(t)
 
 
-    actions_to_index = {a: i+3 for i, a in enumerate(actions)}
+    # have to include unkown tokens with reduced dataset sizw
+    actions_to_index = {a: i+4 for i, a in enumerate(actions)}
     actions_to_index["<pad>"] = 0
     actions_to_index["<bos>"] = 1
     actions_to_index["<eos>"] = 2
-    targets_to_index = {t: i+2 for i, t in enumerate(targets)}
+    actions_to_index["<unk>"] = 3
+    targets_to_index = {t: i+4 for i, t in enumerate(targets)}
     targets_to_index["<pad>"] = 0
     targets_to_index["<bos>"] = 1
     targets_to_index["<eos>"] = 2
+    targets_to_index["<unk>"] = 3
     index_to_actions = {actions_to_index[a]: a for a in actions_to_index}
     index_to_targets = {targets_to_index[t]: t for t in targets_to_index}
     return actions_to_index, index_to_actions, targets_to_index, index_to_targets
 
-def prefix_match(pred_actions, pred_targets, true_actions, true_targets):
+def prefix_match(pred_actions, pred_targets, true_actions, true_targets, actions_size, targets_size):
     # predicted and gt are sequences of (action, target) labels, the sequences should be of same length
     # computes how many matching (action, target) labels there are between predicted and gt
     # is a number between 0 and 1 
@@ -106,8 +108,9 @@ def prefix_match(pred_actions, pred_targets, true_actions, true_targets):
 
     true_actions = torch.unsqueeze(true_actions, dim=2)
     true_targets = torch.unsqueeze(true_targets, dim=2)
-    true_actions = functional.one_hot(true_actions.max(dim=2).values.to(torch.int64), 11)
-    true_targets = functional.one_hot(true_targets.max(dim=2).values.to(torch.int64), 83)
+
+    true_actions = functional.one_hot(true_actions.max(dim=2).values.to(torch.int64), actions_size)
+    true_targets = functional.one_hot(true_targets.max(dim=2).values.to(torch.int64), targets_size)
 
     # must be the same datatype, and can't cast the true_actions/prediciton to floats for whatever reason 
     pred_actions = pred_actions.type(torch.int64)
